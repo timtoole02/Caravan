@@ -1,0 +1,11 @@
+[package]
+name = "caravan"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nanocamelid = { path = "../NanoCamelid" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+clap = { version = "4", features = ["derive"] }
