@@ -75,9 +75,9 @@
                 </div>
             </div>
             <div class="flex items-center gap-6">
-                <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
-                    <span class="h-2 w-2 rounded-full bg-emerald-400 glow-pulse"></span>
-                    SWARM ACTIVE
+                <div id="swarm-status-badge" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold">
+                    <span id="swarm-status-dot" class="h-2 w-2 rounded-full bg-amber-400 glow-pulse"></span>
+                    <span id="swarm-status-text">CONNECTING...</span>
                 </div>
                 <div class="flex items-center gap-2 text-xs text-slate-400 font-mono">
                     <i data-lucide="cpu" class="h-4 w-4 text-violet-400"></i>
@@ -219,6 +219,22 @@
                     document.getElementById('latency-overlay').textContent = status.latency_report;
                 }
 
+                // Update Status Badge dynamically
+                const statusBadge = document.getElementById('swarm-status-badge');
+                const statusDot = document.getElementById('swarm-status-dot');
+                const statusText = document.getElementById('swarm-status-text');
+                if (statusBadge && statusDot && statusText) {
+                    if (status.connected) {
+                        statusBadge.className = "flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold";
+                        statusDot.className = "h-2 w-2 rounded-full bg-emerald-400 glow-pulse";
+                        statusText.textContent = "SWARM ACTIVE";
+                    } else {
+                        statusBadge.className = "flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold";
+                        statusDot.className = "h-2 w-2 rounded-full bg-amber-400 glow-pulse";
+                        statusText.textContent = "CONNECTING...";
+                    }
+                }
+
                 // Update Swarm Nodes List and Re-draw SVG if changed
                 if (JSON.stringify(status.nodes) !== JSON.stringify(swarmNodes)) {
                     swarmNodes = status.nodes || [];
@@ -230,6 +246,14 @@
 
             } catch (err) {
                 console.error("Failed to poll status API:", err);
+                const statusBadge = document.getElementById('swarm-status-badge');
+                const statusDot = document.getElementById('swarm-status-dot');
+                const statusText = document.getElementById('swarm-status-text');
+                if (statusBadge && statusDot && statusText) {
+                    statusBadge.className = "flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-semibold";
+                    statusDot.className = "h-2 w-2 rounded-full bg-red-400 glow-pulse";
+                    statusText.textContent = "CONSOLE OFFLINE";
+                }
             }
         }
 

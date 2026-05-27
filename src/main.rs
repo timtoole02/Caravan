@@ -94,6 +94,7 @@ struct SwarmStatus {
     compute_time_ms: f32,
     latency_report: String,
     nodes: Vec<NodeDiscoveryInfo>,
+    connected: bool,
 }
 
 async fn run_worker(
@@ -254,30 +255,7 @@ async fn run_client(
     let tokenizer = nanocamelid::tokenizer::Tokenizer::from_gguf(&gguf)
         .map_err(|e| format!("failed to load tokenizer: {e}"))?;
 
-    println!("Tokenizer loaded successfully! Connecting to swarm entry point: {target_addr}...");
-    let mut stream = TcpStream::connect(target_addr).await?;
-    println!("Connected to swarm successfully!");
-
-    // Run swarm discovery handshake to identify active pipeline topology
-    println!("Performing dynamic swarm topology discovery...");
-    let disc_req = CaravanMessage::DiscoveryRequest(vec![]);
-    send_message(&mut stream, &disc_req).await?;
-    let disc_resp = recv_message(&mut stream).await?;
-
-    let mut discovered_nodes = Vec::new();
-    if let CaravanMessage::DiscoveryResponse(nodes) = disc_resp {
-        discovered_nodes = nodes;
-        println!("\n--- Caravan Swarm Pipeline Topology Discovered ---");
-        for (i, node) in discovered_nodes.iter().enumerate() {
-            println!(
-                "Node {i}: Addr {} | Layers {} | Final? {} | Role: {}",
-                node.addr, node.layers, node.is_final, node.role
-            );
-        }
-        println!("--------------------------------------------------\n");
-    }
-
-    // Initialize and launch embedded HTTP Web Dashboard server
+    // Initialize SwarmStatus state before connection to let HTTP server start immediately
     let model_name = gguf
         .metadata_string("general.name")
         .unwrap_or_else(|| "Caravan Swarm Model")
@@ -290,9 +268,11 @@ async fn run_client(
         net_latency_ms: 0.0,
         compute_time_ms: 0.0,
         latency_report: "Awaiting generation...".to_string(),
-        nodes: discovered_nodes,
+        nodes: Vec::new(),
+        connected: false,
     }));
 
+    // Start background HTTP Swarm Console immediately
     let target_clone = target_addr.to_string();
     let model_path_clone = model_path.to_path_buf();
     let status_clone = swarm_status.clone();
@@ -301,13 +281,71 @@ async fn run_client(
         start_http_server(status_clone, target_clone, model_path_clone).await;
     });
 
+    println!("Web Console Visualizer active at http://127.0.0.1:7733");
+
+    // Try initial connection
+    println!("Connecting to swarm entry point: {target_addr}...");
+    let mut stream = match TcpStream::connect(target_addr).await {
+        Ok(s) => {
+            println!("Connected to swarm successfully!");
+            let mut s = s;
+            // Run swarm discovery handshake to identify active pipeline topology
+            println!("Performing dynamic swarm topology discovery...");
+            let disc_req = CaravanMessage::DiscoveryRequest(vec![]);
+            let mut discovered_nodes = Vec::new();
+            if send_message(&mut s, &disc_req).await.is_ok() {
+                if let Ok(CaravanMessage::DiscoveryResponse(nodes)) = recv_message(&mut s).await {
+                    discovered_nodes = nodes;
+                    println!("\n--- Caravan Swarm Pipeline Topology Discovered ---");
+                    for (i, node) in discovered_nodes.iter().enumerate() {
+                        println!(
+                            "Node {i}: Addr {} | Layers {} | Final? {} | Role: {}",
+                            node.addr, node.layers, node.is_final, node.role
+                        );
+                    }
+                    println!("--------------------------------------------------\n");
+                }
+            }
+            {
+                let mut st = swarm_status.lock().await;
+                st.connected = true;
+                st.nodes = discovered_nodes;
+            }
+            Some(s)
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to connect to swarm entry point: {e}");
+            println!("Swarm dashboard will remain active. Dynamic reconnection is active.");
+            None
+        }
+    };
+
     if let Some(prompt) = single_prompt {
-        execute_turn(&mut stream, &tokenizer, &prompt, temp, max_tokens).await?;
+        let mut s = match stream {
+            Some(s) => s,
+            None => {
+                println!("Single turn requested. Attempting to connect to swarm...");
+                let s = TcpStream::connect(target_addr).await?;
+                let mut s = s;
+                let disc_req = CaravanMessage::DiscoveryRequest(vec![]);
+                let mut discovered_nodes = Vec::new();
+                send_message(&mut s, &disc_req).await?;
+                if let CaravanMessage::DiscoveryResponse(nodes) = recv_message(&mut s).await? {
+                    discovered_nodes = nodes;
+                }
+                {
+                    let mut st = swarm_status.lock().await;
+                    st.connected = true;
+                    st.nodes = discovered_nodes;
+                }
+                s
+            }
+        };
+        execute_turn(&mut s, &tokenizer, &prompt, temp, max_tokens).await?;
     } else {
         // Interactive chat TUI loop
         let stdin = io::stdin();
         println!("\nCaravan Swarm Interactive Chat. Type /exit to quit.");
-        println!("Web Console Visualizer active at http://127.0.0.1:7733\n");
         loop {
             print!("swarm> ");
             io::stdout().flush()?;
@@ -330,7 +368,44 @@ async fn run_client(
                 break;
             }
 
-            execute_turn(&mut stream, &tokenizer, input, temp, max_tokens).await?;
+            if stream.is_none() {
+                println!("Connecting to swarm entry point: {target_addr}...");
+                match TcpStream::connect(target_addr).await {
+                    Ok(s) => {
+                        println!("Connected to swarm successfully!");
+                        let mut s = s;
+                        let disc_req = CaravanMessage::DiscoveryRequest(vec![]);
+                        let mut discovered_nodes = Vec::new();
+                        if send_message(&mut s, &disc_req).await.is_ok() {
+                            if let Ok(CaravanMessage::DiscoveryResponse(nodes)) = recv_message(&mut s).await {
+                                discovered_nodes = nodes;
+                            }
+                        }
+                        {
+                            let mut st = swarm_status.lock().await;
+                            st.connected = true;
+                            st.nodes = discovered_nodes;
+                        }
+                        stream = Some(s);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: Swarm backend is still offline: {e}");
+                        continue;
+                    }
+                }
+            }
+
+            if let Some(ref mut s) = stream {
+                if let Err(e) = execute_turn(s, &tokenizer, input, temp, max_tokens).await {
+                    eprintln!("Generation failed: {e}. Swarm disconnected.");
+                    {
+                        let mut st = swarm_status.lock().await;
+                        st.connected = false;
+                        st.nodes = Vec::new();
+                    }
+                    stream = None;
+                }
+            }
             println!();
         }
     }
@@ -526,16 +601,58 @@ async fn handle_http_chat(
 
     if prompt_tokens.is_empty() {
         stream.write_all(b"data: [ERROR: Empty prompt]\n\n").await?;
+        stream.write_all(b"data: [DONE]\n\n").await?;
         return Ok(());
     }
 
-    let mut swarm_stream = TcpStream::connect(target_addr).await?;
+    println!("[Caravan Swarm Dashboard] Connecting to backend at {}...", target_addr);
+    let mut swarm_stream = match TcpStream::connect(target_addr).await {
+        Ok(s) => s,
+        Err(e) => {
+            let error_msg = format!("data: [ERROR: Failed to connect to swarm backend: {}]\n\n", e);
+            let _ = stream.write_all(error_msg.as_bytes()).await;
+            let _ = stream.write_all(b"data: [DONE]\n\n").await;
+            {
+                let mut st = status.lock().await;
+                st.connected = false;
+                st.nodes = Vec::new();
+            }
+            return Ok(());
+        }
+    };
 
+    println!("[Caravan Swarm Dashboard] Swarm connected. Performing handshake...");
     let disc_req = CaravanMessage::DiscoveryRequest(vec![]);
-    send_message(&mut swarm_stream, &disc_req).await?;
-    let disc_resp = recv_message(&mut swarm_stream).await?;
+    if let Err(e) = send_message(&mut swarm_stream, &disc_req).await {
+        let error_msg = format!("data: [ERROR: Failed to write handshake: {}]\n\n", e);
+        let _ = stream.write_all(error_msg.as_bytes()).await;
+        let _ = stream.write_all(b"data: [DONE]\n\n").await;
+        {
+            let mut st = status.lock().await;
+            st.connected = false;
+            st.nodes = Vec::new();
+        }
+        return Ok(());
+    }
+
+    let disc_resp = match recv_message(&mut swarm_stream).await {
+        Ok(r) => r,
+        Err(e) => {
+            let error_msg = format!("data: [ERROR: Failed to read handshake response: {}]\n\n", e);
+            let _ = stream.write_all(error_msg.as_bytes()).await;
+            let _ = stream.write_all(b"data: [DONE]\n\n").await;
+            {
+                let mut st = status.lock().await;
+                st.connected = false;
+                st.nodes = Vec::new();
+            }
+            return Ok(());
+        }
+    };
+
     if let CaravanMessage::DiscoveryResponse(nodes) = disc_resp {
         let mut st = status.lock().await;
+        st.connected = true;
         st.nodes = nodes;
     }
 
@@ -554,8 +671,18 @@ async fn handle_http_chat(
                 is_prefill: true,
                 position: pos,
             });
-            send_message(&mut swarm_stream, &prefill_msg).await?;
-            let _ = recv_message(&mut swarm_stream).await?;
+            if let Err(e) = send_message(&mut swarm_stream, &prefill_msg).await {
+                let error_msg = format!("data: [ERROR: Prefill send failed: {}]\n\n", e);
+                let _ = stream.write_all(error_msg.as_bytes()).await;
+                let _ = stream.write_all(b"data: [DONE]\n\n").await;
+                return Ok(());
+            }
+            if let Err(e) = recv_message(&mut swarm_stream).await {
+                let error_msg = format!("data: [ERROR: Prefill response failed: {}]\n\n", e);
+                let _ = stream.write_all(error_msg.as_bytes()).await;
+                let _ = stream.write_all(b"data: [DONE]\n\n").await;
+                return Ok(());
+            }
             pos += prefix_tokens.len();
         }
 
@@ -566,12 +693,29 @@ async fn handle_http_chat(
             is_prefill: false,
             position: pos,
         });
-        send_message(&mut swarm_stream, &final_prefill_msg).await?;
+        if let Err(e) = send_message(&mut swarm_stream, &final_prefill_msg).await {
+            let error_msg = format!("data: [ERROR: Prefill final send failed: {}]\n\n", e);
+            let _ = stream.write_all(error_msg.as_bytes()).await;
+            let _ = stream.write_all(b"data: [DONE]\n\n").await;
+            return Ok(());
+        }
 
-        let response = recv_message(&mut swarm_stream).await?;
+        let response = match recv_message(&mut swarm_stream).await {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("data: [ERROR: Prefill final response failed: {}]\n\n", e);
+                let _ = stream.write_all(error_msg.as_bytes()).await;
+                let _ = stream.write_all(b"data: [DONE]\n\n").await;
+                return Ok(());
+            }
+        };
         if let CaravanMessage::TokenResponse(next_token) = response {
             generated_tokens.push(next_token);
             pos += 1;
+        } else {
+            let _ = stream.write_all(b"data: [ERROR: Unexpected prefill response type]\n\n").await;
+            let _ = stream.write_all(b"data: [DONE]\n\n").await;
+            return Ok(());
         }
     }
 
@@ -609,13 +753,25 @@ async fn handle_http_chat(
         });
         
         let loop_start = std::time::Instant::now();
-        send_message(&mut swarm_stream, &decode_msg).await?;
+        if let Err(e) = send_message(&mut swarm_stream, &decode_msg).await {
+            let error_msg = format!("data: [ERROR: Decode send failed: {}]\n\n", e);
+            let _ = stream.write_all(error_msg.as_bytes()).await;
+            break;
+        }
 
-        let response = recv_message(&mut swarm_stream).await?;
+        let response = match recv_message(&mut swarm_stream).await {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("data: [ERROR: Decode response failed: {}]\n\n", e);
+                let _ = stream.write_all(error_msg.as_bytes()).await;
+                break;
+            }
+        };
         if let CaravanMessage::TokenResponse(next_token) = response {
             generated_tokens.push(next_token);
             pos += 1;
         } else {
+            let _ = stream.write_all(b"data: [ERROR: Unexpected decode response type]\n\n").await;
             break;
         }
 
