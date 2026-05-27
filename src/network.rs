@@ -17,12 +17,24 @@ pub struct PipelinePayload {
     pub position: usize,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct NodeDiscoveryInfo {
+    pub addr: String,
+    pub layers: String,
+    pub is_final: bool,
+    pub role: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum CaravanMessage {
     /// Sent forward through the pipeline nodes
     Forward(PipelinePayload),
     /// Returned from the final node back to the client
     TokenResponse(u32),
+    /// Sent forward to gather dynamic layout configurations of the edge nodes
+    DiscoveryRequest(Vec<NodeDiscoveryInfo>),
+    /// Returned back containing the compiled swarm layout
+    DiscoveryResponse(Vec<NodeDiscoveryInfo>),
 }
 
 /// Send a length-prefixed serialized CaravanMessage over a TCP stream

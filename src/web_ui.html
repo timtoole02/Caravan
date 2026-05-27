@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caravan Swarm Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                        mono: ['Space Grotesk', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0c0914;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(88, 28, 135, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(59, 130, 246, 0.1) 0px, transparent 50%);
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.02);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .glass-active {
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            box-shadow: 0 0 20px rgba(139, 92, 246, 0.15);
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 0.2; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.05); }
+        }
+        .glow-pulse {
+            animation: pulse-glow 3s infinite ease-in-out;
+        }
+    </style>
+</head>
+<body class="text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-violet-500/30">
+
+    <!-- Header bar -->
+    <header class="glass border-b border-white/5 sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="h-10 w-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-violet-500/20">
+                    <i data-lucide="network" class="h-6 w-6 text-white"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">CARAVAN</h1>
+                    <p class="text-xs text-violet-400/80 font-mono tracking-wider">EDGE SWARM ORCHESTRATOR</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-6">
+                <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
+                    <span class="h-2 w-2 rounded-full bg-emerald-400 glow-pulse"></span>
+                    SWARM ACTIVE
+                </div>
+                <div class="flex items-center gap-2 text-xs text-slate-400 font-mono">
+                    <i data-lucide="cpu" class="h-4 w-4 text-violet-400"></i>
+                    <span id="model-name">Llama-3.2-1B-Instruct</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="max-w-7xl mx-auto w-full px-6 py-6 flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- Left Side: Swarm Visualizer and Telemetry (7 Cols) -->
+        <div class="lg:col-span-7 flex flex-col gap-6">
+            
+            <!-- Swarm Visualizer Canvas -->
+            <div class="glass rounded-2xl p-6 flex flex-col h-[320px] relative overflow-hidden">
+                <div class="flex items-center justify-between mb-4 z-10">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="activity" class="h-5 w-5 text-violet-400"></i>
+                        <h2 class="text-base font-semibold tracking-wide uppercase text-slate-200">Swarm Pipeline Topology</h2>
+                    </div>
+                    <div class="text-xs text-slate-400 font-mono" id="latency-overlay">
+                        Waiting for prompt...
+                    </div>
+                </div>
+
+                <!-- SVGSwarm Visualizer -->
+                <div class="flex-1 w-full relative">
+                    <svg id="swarm-svg" class="w-full h-full" style="min-height: 220px;"></svg>
+                </div>
+            </div>
+
+            <!-- Dials / Metric Counters -->
+            <div class="grid grid-cols-3 gap-4">
+                <div class="glass rounded-xl p-4 flex flex-col justify-between">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Swarm Output</span>
+                    <div class="flex items-baseline gap-1 mt-2">
+                        <span id="metric-tps" class="text-3xl font-bold font-mono tracking-tight text-white">0.0</span>
+                        <span class="text-xs text-slate-400">tok/s</span>
+                    </div>
+                </div>
+                <div class="glass rounded-xl p-4 flex flex-col justify-between">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">TTFT Latency</span>
+                    <div class="flex items-baseline gap-1 mt-2">
+                        <span id="metric-ttft" class="text-3xl font-bold font-mono tracking-tight text-violet-400">0</span>
+                        <span class="text-xs text-slate-400">ms</span>
+                    </div>
+                </div>
+                <div class="glass rounded-xl p-4 flex flex-col justify-between">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Network Transit</span>
+                    <div class="flex items-baseline gap-1 mt-2">
+                        <span id="metric-net" class="text-3xl font-bold font-mono tracking-tight text-indigo-400">0.0</span>
+                        <span class="text-xs text-slate-400">ms</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Charts -->
+            <div class="glass rounded-2xl p-6 flex-1 flex flex-col min-h-[220px]">
+                <h2 class="text-base font-semibold tracking-wide uppercase text-slate-200 mb-4 flex items-center gap-2">
+                    <i data-lucide="bar-chart-3" class="h-5 w-5 text-indigo-400"></i>
+                    Compute vs. Network Latency
+                </h2>
+                <div class="flex-1 w-full relative flex items-center justify-center">
+                    <canvas id="perfChart" class="w-full max-h-[160px]"></canvas>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Right Side: Swarm Chat Terminal (5 Cols) -->
+        <div class="lg:col-span-5 flex flex-col glass rounded-2xl overflow-hidden border border-white/5 h-[640px]">
+            <!-- Terminal Header -->
+            <div class="bg-white/[0.02] px-6 py-4 border-b border-white/5 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <div class="flex gap-1.5">
+                        <span class="h-3 w-3 rounded-full bg-red-500/40"></span>
+                        <span class="h-3 w-3 rounded-full bg-yellow-500/40"></span>
+                        <span class="h-3 w-3 rounded-full bg-green-500/40"></span>
+                    </div>
+                    <span class="text-xs text-slate-400 font-mono ml-2">swarm_session.sh</span>
+                </div>
+                <div class="text-[10px] text-violet-400 font-mono uppercase bg-violet-500/10 px-2 py-0.5 rounded border border-violet-500/20">
+                    SSE Streaming
+                </div>
+            </div>
+
+            <!-- Chat Messages Log -->
+            <div id="chat-messages" class="flex-1 p-6 overflow-y-auto custom-scrollbar flex flex-col gap-4 font-mono text-sm">
+                <div class="text-slate-400">
+                    [System] Connected to Caravan Edge Swarm. Waiting for input...
+                </div>
+            </div>
+
+            <!-- Chat Input Area -->
+            <div class="p-4 bg-white/[0.01] border-t border-white/5">
+                <form id="chat-form" class="flex gap-2">
+                    <input type="text" id="chat-input" placeholder="Type a prompt to distribute to the swarm..." 
+                           class="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-violet-500/50 transition font-mono placeholder:text-slate-600">
+                    <button type="submit" id="send-button"
+                            class="bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white font-medium text-sm px-5 py-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-violet-600/20">
+                        <i data-lucide="send" class="h-4 w-4"></i>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="mt-auto border-t border-white/5 py-4 text-center text-xs text-slate-500 font-mono">
+        Caravan edge swarm engine. Powered by pure Rust & NanoCamelid kernels.
+    </footer>
+
+    <script>
+        // Init Lucide Icons
+        lucide.createIcons();
+
+        // Application State
+        let swarmNodes = [];
+        let performanceChart = null;
+        let activeGeneration = false;
+
+        // Fetch local swarm state from backend
+        async function fetchSwarmStatus() {
+            try {
+                const res = await fetch('/api/status');
+                if (!res.ok) return;
+                const status = await res.json();
+                
+                // Update basic UI fields
+                document.getElementById('model-name').textContent = status.model_name || 'nanocamelid';
+                document.getElementById('metric-tps').textContent = status.tps ? status.tps.toFixed(1) : '0.0';
+                document.getElementById('metric-ttft').textContent = status.ttft_ms || '0';
+                document.getElementById('metric-net').textContent = status.net_latency_ms ? status.net_latency_ms.toFixed(1) : '0.0';
+                
+                if (status.latency_report) {
+                    document.getElementById('latency-overlay').textContent = status.latency_report;
+                }
+
+                // Update Swarm Nodes List and Re-draw SVG if changed
+                if (JSON.stringify(status.nodes) !== JSON.stringify(swarmNodes)) {
+                    swarmNodes = status.nodes || [];
+                    drawSwarmTopology();
+                }
+
+                // Update Performance Chart
+                updateChartData(status.compute_time_ms || 0, status.net_latency_ms || 0);
+
+            } catch (err) {
+                console.error("Failed to poll status API:", err);
+            }
+        }
+
+        // Periodically poll backend status
+        setInterval(fetchSwarmStatus, 500);
+
+        // Chart.js Performance Dials
+        function initChart() {
+            const ctx = document.getElementById('perfChart').getContext('2d');
+            performanceChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Silicon Compute time', 'Network Transit Delay'],
+                    datasets: [{
+                        label: 'Latency (ms)',
+                        data: [0, 0],
+                        backgroundColor: [
+                            'rgba(139, 92, 246, 0.6)', // Violet for compute
+                            'rgba(99, 102, 241, 0.6)'  // Indigo for network
+                        ],
+                        borderColor: [
+                            'rgba(139, 92, 246, 1)',
+                            'rgba(99, 102, 241, 1)'
+                        ],
+                        borderWidth: 1,
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: { color: 'rgba(255, 255, 255, 0.5)', font: { family: 'Space Grotesk' } }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: 'rgba(255, 255, 255, 0.7)', font: { family: 'Outfit' } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateChartData(computeMs, netMs) {
+            if (!performanceChart) return;
+            performanceChart.data.datasets[0].data = [computeMs, netMs];
+            performanceChart.update();
+        }
+
+        // Dynamic SVG Swarm Painter
+        function drawSwarmTopology() {
+            const svg = document.getElementById('swarm-svg');
+            svg.innerHTML = ''; // clear
+
+            if (swarmNodes.length === 0) {
+                // Draw a fallback single node placeholder
+                svg.innerHTML = `
+                    <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="Space Grotesk">
+                        Awaiting Node 0 Handshake...
+                    </text>
+                `;
+                return;
+            }
+
+            const width = svg.clientWidth || 600;
+            const height = svg.clientHeight || 220;
+            const paddingX = 80;
+            const count = swarmNodes.length;
+            const stepY = height / (count + 1);
+
+            // Draw connection paths first so they lay behind node blocks
+            for (let i = 0; i < count; i++) {
+                const node = swarmNodes[i];
+                const x = paddingX + (i * (width - 2 * paddingX)) / Math.max(1, count - 1);
+                const y = height / 2;
+
+                // Path link to next node
+                if (i < count - 1) {
+                    const nextX = paddingX + ((i + 1) * (width - 2 * paddingX)) / Math.max(1, count - 1);
+                    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    line.setAttribute("x1", x);
+                    line.setAttribute("y1", y);
+                    line.setAttribute("x2", nextX);
+                    line.setAttribute("y2", y);
+                    line.setAttribute("stroke", activeGeneration ? "rgba(139, 92, 246, 0.8)" : "rgba(255, 255, 255, 0.08)");
+                    line.setAttribute("stroke-width", "2");
+                    if (activeGeneration) {
+                        line.setAttribute("stroke-dasharray", "6,6");
+                        // Add animated flows
+                        const anim = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+                        anim.setAttribute("attributeName", "stroke-dashoffset");
+                        anim.setAttribute("values", "100;0");
+                        anim.setAttribute("dur", "2s");
+                        anim.setAttribute("repeatCount", "indefinite");
+                        line.appendChild(anim);
+                    }
+                    svg.appendChild(line);
+                }
+            }
+
+            // Draw Node Circles and Info Labels
+            for (let i = 0; i < count; i++) {
+                const node = swarmNodes[i];
+                const x = paddingX + (i * (width - 2 * paddingX)) / Math.max(1, count - 1);
+                const y = height / 2;
+
+                // Group wrapper
+                const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+
+                // Pulse Ring (glowing active effect)
+                if (activeGeneration) {
+                    const pulse = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                    pulse.setAttribute("cx", x);
+                    pulse.setAttribute("cy", y);
+                    pulse.setAttribute("r", 28);
+                    pulse.setAttribute("fill", "transparent");
+                    pulse.setAttribute("stroke", "rgba(139, 92, 246, 0.3)");
+                    pulse.setAttribute("stroke-width", "2");
+                    
+                    const scaleAnim = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+                    scaleAnim.setAttribute("attributeName", "r");
+                    scaleAnim.setAttribute("values", "20;36");
+                    scaleAnim.setAttribute("dur", "1.5s");
+                    scaleAnim.setAttribute("repeatCount", "indefinite");
+                    pulse.appendChild(scaleAnim);
+
+                    const opacityAnim = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+                    opacityAnim.setAttribute("attributeName", "opacity");
+                    opacityAnim.setAttribute("values", "1;0");
+                    opacityAnim.setAttribute("dur", "1.5s");
+                    opacityAnim.setAttribute("repeatCount", "indefinite");
+                    pulse.appendChild(opacityAnim);
+
+                    g.appendChild(pulse);
+                }
+
+                // Core Node circle
+                const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                circle.setAttribute("cx", x);
+                circle.setAttribute("cy", y);
+                circle.setAttribute("r", 22);
+                circle.setAttribute("fill", node.is_final ? "#4338ca" : "#1e1b4b");
+                circle.setAttribute("stroke", activeGeneration ? "#8b5cf6" : "rgba(255,255,255,0.15)");
+                circle.setAttribute("stroke-width", "3");
+                g.appendChild(circle);
+
+                // Icon / Label inside Node
+                const textNum = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                textNum.setAttribute("x", x);
+                textNum.setAttribute("y", y + 4);
+                textNum.setAttribute("fill", "#ffffff");
+                textNum.setAttribute("font-size", "12");
+                textNum.setAttribute("font-family", "Space Grotesk");
+                textNum.setAttribute("font-weight", "bold");
+                textNum.setAttribute("text-anchor", "middle");
+                textNum.textContent = node.is_final ? "F" : `N${i}`;
+                g.appendChild(textNum);
+
+                // IP Address Text below Node
+                const textIp = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                textIp.setAttribute("x", x);
+                textIp.setAttribute("y", y + 44);
+                textIp.setAttribute("fill", "#e2e8f0");
+                textIp.setAttribute("font-size", "11");
+                textIp.setAttribute("font-family", "Space Grotesk");
+                textIp.setAttribute("text-anchor", "middle");
+                textIp.textContent = node.addr;
+                g.appendChild(textIp);
+
+                // Layers Range Text above Node
+                const textLayers = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                textLayers.setAttribute("x", x);
+                textLayers.setAttribute("y", y - 36);
+                textLayers.setAttribute("fill", "#a78bfa");
+                textLayers.setAttribute("font-size", "10");
+                textLayers.setAttribute("font-family", "Space Grotesk");
+                textLayers.setAttribute("font-weight", "bold");
+                textLayers.setAttribute("text-anchor", "middle");
+                textLayers.textContent = `L ${node.layers}`;
+                g.appendChild(textLayers);
+
+                // CPU/Telemetry detail above Node layers
+                const textStats = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                textStats.setAttribute("x", x);
+                textStats.setAttribute("y", y - 50);
+                textStats.setAttribute("fill", "#64748b");
+                textStats.setAttribute("font-size", "9");
+                textStats.setAttribute("font-family", "Space Grotesk");
+                textStats.setAttribute("text-anchor", "middle");
+                textStats.textContent = node.role || 'Worker';
+                g.appendChild(textStats);
+
+                svg.appendChild(g);
+            }
+        }
+
+        // Web Chat Submission & Streaming Parser
+        const chatForm = document.getElementById('chat-form');
+        const chatInput = document.getElementById('chat-input');
+        const chatMessages = document.getElementById('chat-messages');
+
+        function appendMessage(sender, text, isSystem = false) {
+            const div = document.createElement('div');
+            if (isSystem) {
+                div.className = "text-slate-500 italic";
+            } else {
+                div.className = sender === 'user' ? "text-violet-300" : "text-emerald-300";
+            }
+            const prefix = isSystem ? "" : (sender === 'user' ? "swarm> " : "camelid> ");
+            div.textContent = `${prefix}${text}`;
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return div;
+        }
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = chatInput.value.trim();
+            if (!text || activeGeneration) return;
+
+            chatInput.value = '';
+            appendMessage('user', text);
+            
+            // Set Swarm active states
+            activeGeneration = true;
+            drawSwarmTopology();
+
+            const statusMsgDiv = appendMessage('system', 'Sending pipeline token request forward...', true);
+            const assistantMsgDiv = appendMessage('assistant', '');
+
+            try {
+                // Perform a streaming fetch to our embedded custom HTTP server
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: text })
+                });
+
+                if (!response.ok) {
+                    statusMsgDiv.textContent = `[System] Error communicating with Swarm: HTTP ${response.status}`;
+                    activeGeneration = false;
+                    drawSwarmTopology();
+                    return;
+                }
+
+                statusMsgDiv.textContent = `[System] Prefill complete! Swarm is decoding...`;
+
+                // Handle server sent events (SSE) reader
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder("utf-8");
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // keep partial last line
+
+                    for (const line of lines) {
+                        const cleanLine = line.trim();
+                        if (cleanLine.startsWith('data: ')) {
+                            const data = cleanLine.substring(6);
+                            if (data === '[DONE]') {
+                                statusMsgDiv.textContent = `[System] Swarm finished token generation pass.`;
+                            } else {
+                                assistantMsgDiv.textContent += data;
+                            }
+                        }
+                    }
+                }
+
+            } catch (err) {
+                statusMsgDiv.textContent = `[System] Error executing pipeline run: ${err.message}`;
+            } finally {
+                activeGeneration = false;
+                drawSwarmTopology();
+            }
+        });
+
+        // Initialize App
+        window.addEventListener('resize', drawSwarmTopology);
+        initChart();
+        fetchSwarmStatus();
+    </script>
+</body>
+</html>
