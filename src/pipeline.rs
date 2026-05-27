@@ -1,5 +1,5 @@
 use std::path::Path;
-use nanocamelid::model::{LlamaModelConfig, LlamaWeights};
+use nanocamelid::model::{LlamaModelConfig, LlamaWeights, LlamaFfnWeights};
 use nanocamelid::inference::{
     LlamaKvCache, LlamaWorkspace, LlamaBatchWorkspace, LlamaRuntimeOptions,
     rms_norm, quantize_f32_to_q8_0, matmul_quantized, apply_rope, apply_attention_heads,
@@ -208,37 +208,44 @@ impl SwarmPipelineExecutor {
             );
             quantize_f32_to_q8_0(&self.ws.norm_x, &mut self.ws.x_i8, &mut self.ws.x_scales);
 
-            matmul_quantized(
-                &mut self.ws.ffn_gate,
-                &self.ws.x_i8,
-                &self.ws.x_scales,
-                &layer.w1,
-                self.config.feed_forward_length,
-                self.config.embedding_length,
-                self.options.q8_selector,
-            );
-            matmul_quantized(
-                &mut self.ws.ffn_up,
-                &self.ws.x_i8,
-                &self.ws.x_scales,
-                &layer.w3,
-                self.config.feed_forward_length,
-                self.config.embedding_length,
-                self.options.q8_selector,
-            );
+            match &layer.ffn {
+                LlamaFfnWeights::Dense { w1, w3, w2 } => {
+                    matmul_quantized(
+                        &mut self.ws.ffn_gate,
+                        &self.ws.x_i8,
+                        &self.ws.x_scales,
+                        w1,
+                        self.config.feed_forward_length,
+                        self.config.embedding_length,
+                        self.options.q8_selector,
+                    );
+                    matmul_quantized(
+                        &mut self.ws.ffn_up,
+                        &self.ws.x_i8,
+                        &self.ws.x_scales,
+                        w3,
+                        self.config.feed_forward_length,
+                        self.config.embedding_length,
+                        self.options.q8_selector,
+                    );
 
-            fused_silu_mul(&mut self.ws.ffn_gate_up, &self.ws.ffn_gate, &self.ws.ffn_up);
-            quantize_f32_to_q8_0(&self.ws.ffn_gate_up, &mut self.ws.x_i8, &mut self.ws.x_scales);
+                    fused_silu_mul(&mut self.ws.ffn_gate_up, &self.ws.ffn_gate, &self.ws.ffn_up);
+                    quantize_f32_to_q8_0(&self.ws.ffn_gate_up, &mut self.ws.x_i8, &mut self.ws.x_scales);
 
-            matmul_quantized(
-                &mut self.ws.hidden,
-                &self.ws.x_i8,
-                &self.ws.x_scales,
-                &layer.w2,
-                self.config.embedding_length,
-                self.config.feed_forward_length,
-                self.options.q8_selector,
-            );
+                    matmul_quantized(
+                        &mut self.ws.hidden,
+                        &self.ws.x_i8,
+                        &self.ws.x_scales,
+                        w2,
+                        self.config.embedding_length,
+                        self.config.feed_forward_length,
+                        self.options.q8_selector,
+                    );
+                }
+                LlamaFfnWeights::MoE { .. } => {
+                    return Err("Caravan currently only supports dense model architectures (MoE is not implemented in swarm mode)".to_string());
+                }
+            }
 
             for i in 0..self.config.embedding_length {
                 self.ws.hidden[i] += self.ws.residual[i];
@@ -487,59 +494,66 @@ impl SwarmPipelineExecutor {
                 self.config.embedding_length,
             );
 
-            let ffn_shape = BatchMatmulShape {
-                batch_size,
-                rows: self.config.feed_forward_length,
-                cols: self.config.embedding_length,
-            };
-            matmul_quantized_batch(
-                &mut self.batch_ws.ffn_gate[..batch_size * self.config.feed_forward_length],
-                &self.batch_ws.x_i8[..hidden_len],
-                &self.batch_ws.x_scales[..batch_size * (self.config.embedding_length / Q8_BLOCK_SIZE)],
-                &layer.w1,
-                ffn_shape,
-                self.options.q8_selector,
-            );
-            matmul_quantized_batch(
-                &mut self.batch_ws.ffn_up[..batch_size * self.config.feed_forward_length],
-                &self.batch_ws.x_i8[..hidden_len],
-                &self.batch_ws.x_scales[..batch_size * (self.config.embedding_length / Q8_BLOCK_SIZE)],
-                &layer.w3,
-                ffn_shape,
-                self.options.q8_selector,
-            );
+            match &layer.ffn {
+                LlamaFfnWeights::Dense { w1, w3, w2 } => {
+                    let ffn_shape = BatchMatmulShape {
+                        batch_size,
+                        rows: self.config.feed_forward_length,
+                        cols: self.config.embedding_length,
+                    };
+                    matmul_quantized_batch(
+                        &mut self.batch_ws.ffn_gate[..batch_size * self.config.feed_forward_length],
+                        &self.batch_ws.x_i8[..hidden_len],
+                        &self.batch_ws.x_scales[..batch_size * (self.config.embedding_length / Q8_BLOCK_SIZE)],
+                        w1,
+                        ffn_shape,
+                        self.options.q8_selector,
+                    );
+                    matmul_quantized_batch(
+                        &mut self.batch_ws.ffn_up[..batch_size * self.config.feed_forward_length],
+                        &self.batch_ws.x_i8[..hidden_len],
+                        &self.batch_ws.x_scales[..batch_size * (self.config.embedding_length / Q8_BLOCK_SIZE)],
+                        w3,
+                        ffn_shape,
+                        self.options.q8_selector,
+                    );
 
-            for token_idx in 0..batch_size {
-                let start = token_idx * self.config.feed_forward_length;
-                let end = start + self.config.feed_forward_length;
-                fused_silu_mul(
-                    &mut self.batch_ws.ffn_gate_up[start..end],
-                    &self.batch_ws.ffn_gate[start..end],
-                    &self.batch_ws.ffn_up[start..end],
-                );
+                    for token_idx in 0..batch_size {
+                        let start = token_idx * self.config.feed_forward_length;
+                        let end = start + self.config.feed_forward_length;
+                        fused_silu_mul(
+                            &mut self.batch_ws.ffn_gate_up[start..end],
+                            &self.batch_ws.ffn_gate[start..end],
+                            &self.batch_ws.ffn_up[start..end],
+                        );
+                    }
+
+                    quantize_f32_to_q8_0_batch(
+                        &self.batch_ws.ffn_gate_up[..batch_size * self.config.feed_forward_length],
+                        &mut self.batch_ws.x_i8[..batch_size * self.config.feed_forward_length],
+                        &mut self.batch_ws.x_scales[..batch_size * (self.config.feed_forward_length / Q8_BLOCK_SIZE)],
+                        batch_size,
+                        self.config.feed_forward_length,
+                    );
+
+                    let down_shape = BatchMatmulShape {
+                        batch_size,
+                        rows: self.config.embedding_length,
+                        cols: self.config.feed_forward_length,
+                    };
+                    matmul_quantized_batch(
+                        &mut self.batch_ws.hidden[..hidden_len],
+                        &self.batch_ws.x_i8[..batch_size * self.config.feed_forward_length],
+                        &self.batch_ws.x_scales[..batch_size * (self.config.feed_forward_length / Q8_BLOCK_SIZE)],
+                        w2,
+                        down_shape,
+                        self.options.q8_selector,
+                    );
+                }
+                LlamaFfnWeights::MoE { .. } => {
+                    return Err("Caravan currently only supports dense model architectures (MoE is not implemented in swarm mode)".to_string());
+                }
             }
-
-            quantize_f32_to_q8_0_batch(
-                &self.batch_ws.ffn_gate_up[..batch_size * self.config.feed_forward_length],
-                &mut self.batch_ws.x_i8[..batch_size * self.config.feed_forward_length],
-                &mut self.batch_ws.x_scales[..batch_size * (self.config.feed_forward_length / Q8_BLOCK_SIZE)],
-                batch_size,
-                self.config.feed_forward_length,
-            );
-
-            let down_shape = BatchMatmulShape {
-                batch_size,
-                rows: self.config.embedding_length,
-                cols: self.config.feed_forward_length,
-            };
-            matmul_quantized_batch(
-                &mut self.batch_ws.hidden[..hidden_len],
-                &self.batch_ws.x_i8[..batch_size * self.config.feed_forward_length],
-                &self.batch_ws.x_scales[..batch_size * (self.config.feed_forward_length / Q8_BLOCK_SIZE)],
-                &layer.w2,
-                down_shape,
-                self.options.q8_selector,
-            );
             add_residual_batch(&mut self.batch_ws.hidden[..hidden_len], &self.batch_ws.residual[..hidden_len]);
         }
 
