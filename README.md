@@ -1,68 +1,131 @@
-# Caravan
+# Caravan 🐪
 
-A zero-config, edge-native peer-to-peer cooperative inference engine for running large LLMs across a caravan of resource-constrained devices.
+> **A zero-config, edge-native peer-to-peer cooperative inference engine for running large LLMs across a caravan of resource-constrained devices.**
 
-Caravan is built on top of the high-performance, pure-Rust [NanoCamelid](https://github.com/timtoole02/NanoCamelid) runtime. It partitions transformer model layers across multiple machines on a local network, allowing smaller, memory-limited devices (like Raspberry Pis) to cooperatively execute inference.
+---
 
-## Key Features
-
-- **Cooperative Layer Splitting**: Partition model layers across a pipeline of nodes (e.g. Node A runs layers 0–15, Node 1 runs layers 16–31).
-- **Reduced Memory Footprint**: Each node only loads weights and allocates Key-Value (KV) cache pages for the layers it is assigned to, preventing OOM issues on low-RAM devices.
-- **Negligible Network Latency**: Only intermediate activation vectors (typically ~8KB of data) are sent across the TCP streams, taking under 0.1ms to transmit on local networks.
-- **No Python/C++ Build Steps**: Fully self-contained, pure Rust implementation.
-
-## How It Works
+Caravan is a lightweight, pure-Rust distributed inference engine built on top of the high-performance [NanoCamelid](https://github.com/timtoole02/NanoCamelid) runtime. It partitions transformer model layers across multiple machines on a local network, allowing smaller, memory-limited devices (like a swarm of Raspberry Pis or old laptops) to cooperatively execute inference on models that would otherwise trigger Out-Of-Memory (OOM) failures.
 
 ```
                      [ User Input / Client Node ]
                             │
                             │ (Send prompt tokens)
                             ▼
-              [ Node 0 (e.g., Layers 0-15) ]
+              [ Node 0 (e.g., Layers 0-11) ]  ◄── Pi 5
                             │
-                            │ (Activation Tensor)
+                            │ (8KB Activation Tensor)
                             ▼
-              [ Node 1 (e.g., Layers 16-31) ]
+              [ Node 1 (e.g., Layers 12-23) ] ◄── Pi 4
                             │
-                            │ (Activation Tensor)
+                            │ (8KB Activation Tensor)
                             ▼
-              [ Node 2 (e.g., Layers 32-47) ]
+              [ Node 2 (e.g., Layers 24-31) ] ◄── Final Sampler
                             │
-                            │ (Sample token ID)
+                            │ (Return sampled token ID)
                             ▼
-                     [ Return token ID ]
+                     [ Output Token ]
 ```
 
-1. The **Client** accepts prompt text, tokenizes it, and sends the prompt tokens to **Node 0**.
-2. **Node 0** initializes/reuses its local KV cache segment, performs the forward pass for layers `0..K_0`, and serializes the final activation matrix.
-3. The activation matrix is passed over a fast TCP stream to **Node 1**.
-4. **Node 1** executes layers `K_0+1..K_1` on the input, then passes the result to the next node.
-5. The **Final Node** computes logits, samples the next token ID, and returns the token ID directly back to the Client to output in real-time.
+---
 
-## Quick Start
+## ⚡ The Edge-Swarm Advantage
 
-### Build
-Ensure you have the Rust toolchain installed:
+* **Dynamic Layer Partitioning**: Partition model layers sequentially. If Node 0 runs layers 0–11 and Node 1 runs layers 12–23, each node only loads the weight parameters and allocates Key-Value (KV) cache memory for its assigned slice, completely bypassing single-device RAM bottlenecks.
+* **Micro-Latency Network Passing**: During the forward pass, nodes transmit only the intermediate activation vector (the hidden state matrix, typically **~8KB of data**) to the next hop. Network transit takes **less than 0.1 milliseconds** on local Gigabit Ethernet or Wi-Fi, leaving network overhead virtually invisible.
+* **Embedded Futuristic Web Console**: Caravan features a built-in, zero-dependency async HTTP server. Booting a client automatically hosts a high-end browser-based visualizer showing real-time compute-vs-network metrics, live chat, and an animated SVG topology mapping token flow particles.
+* **Zero Dependencies, Zero Python**: A single compiled binary written in pure Rust. No heavy runtime frameworks, virtual environments, dynamic linking hassles, or complex GPU drivers.
+
+---
+
+## 🎨 Swarm Web Console
+
+When you launch Caravan in client mode, it starts a lightweight HTTP server on port `7733`. Open **`http://localhost:7733`** to access:
+* **Swarm Topology Visualizer**: A responsive, live diagram displaying active edge nodes, their layer splits, and IP addresses. Pulsing glow rings and animated particle streams light up the connections to track activation network transfers in real-time.
+* **Split Compute charts**: Real-time telemetry gauges displaying Global throughput (tokens/second), Time-to-First-Token (TTFT), and raw Compute vs. Network transit delays using Chart.js.
+* **Integrated Terminal Chat**: Send queries to the swarm directly in your browser, viewing streaming chat tokens in real-time.
+
+---
+
+## 🚀 Easy-Start Recipe (Local Simulation)
+
+You don't need multiple physical machines to experience Caravan. You can simulate a fully functioning 3-node cooperative swarm right on your laptop!
+
+### 1. Build the Swarm
+Ensure you have the Rust toolchain installed, then clone and compile:
 ```bash
+git clone https://github.com/timtoole02/Caravan.git
+cd Caravan
 cargo build --release
 ```
 
-### Run (Local Simulation)
-To run a local 3-process simulation on your machine using a single GGUF model:
+### 2. Launch the Swarm Nodes
+Open **four separate terminal windows** and execute the following:
 
-1. **Start the final node (Node 2 - layers 24..31)**:
+* **Terminal 1: Node 2 (Final Sampler - Layers 24..31)**:
+  ```bash
+  ./target/release/caravan --port 8002 --layers 24-31 --model /path/to/model.gguf
+  ```
+
+* **Terminal 2: Node 1 (Intermediate Worker - Layers 12..23)**:
+  ```bash
+  ./target/release/caravan --port 8001 --layers 12-23 --next-node 127.0.0.1:8002 --model /path/to/model.gguf
+  ```
+
+* **Terminal 3: Node 0 (Swarm Entry - Layers 0..11)**:
+  ```bash
+  ./target/release/caravan --port 8000 --layers 0-11 --next-node 127.0.0.1:8001 --model /path/to/model.gguf
+  ```
+
+* **Terminal 4: Swarm Client Chat & Dashboard**:
+  ```bash
+  ./target/release/caravan client --target 127.0.0.1:8000 --model /path/to/model.gguf
+  ```
+
+---
+
+## 🛠️ Command-Line Interface Manual
+
+```text
+Usage: caravan [OPTIONS] [COMMAND]
+
+Commands:
+  client  Start interactive client chat driving the swarm
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --port <PORT>              Port to listen on (for worker mode)
+      --layers <LAYERS>          Contiguous range of layers to run (e.g., 0-15)
+      --next-node <NEXT_NODE>    Address of the next pipeline node (e.g., 127.0.0.1:8001)
+      --model <MODEL>            Path to GGUF model file
+      --temp <TEMP>              Sampling temperature [default: 0.0]
+      --max-tokens <MAX_TOKENS>  Maximum output token budget [default: 128]
+  -h, --help                     Print help
+```
+
+---
+
+## 🛜 Physical Deployment (e.g., Raspberry Pi Swarm)
+
+To run a physical swarm across multiple local devices:
+1. Copy the compiled `caravan` binary to all participating machines.
+2. Ensure they are on the same local network and ports `8000-8002` are open.
+3. Start the worker processes on their respective devices using their host IP addresses:
+   * **Node 1 (Pi 4 - `192.168.1.101`)**:
+     ```bash
+     ./caravan --port 8001 --layers 16-31 --model /path/to/model.gguf
+     ```
+   * **Node 0 (Pi 5 - `192.168.1.100`)**:
+     ```bash
+     ./caravan --port 8000 --layers 0-15 --next-node 192.168.1.101:8001 --model /path/to/model.gguf
+     ```
+4. Run the Client CLI from any device (even a laptop/phone with low RAM loading only the tokenizer):
    ```bash
-   cargo run --release -- --port 8002 --layers 24-31 --model /path/to/model.gguf
+   ./caravan client --target 192.168.1.100:8000 --model /path/to/tokenizer.gguf
    ```
-2. **Start the intermediate node (Node 1 - layers 12..23)**:
-   ```bash
-   cargo run --release -- --port 8001 --layers 12-23 --next-node 127.0.0.1:8002 --model /path/to/model.gguf
-   ```
-3. **Start the starting node (Node 0 - layers 0..11)**:
-   ```bash
-   cargo run --release -- --port 8000 --layers 0-11 --next-node 127.0.0.1:8001 --model /path/to/model.gguf
-   ```
-4. **Launch the interactive client**:
-   ```bash
-   cargo run --release -- client --target 127.0.0.1:8000 --model /path/to/model.gguf
-   ```
+5. Open **`http://localhost:7733`** on the client machine to watch your physical edge swarm pulse and generate!
+
+---
+
+## 📄 License
+
+Caravan is licensed under the MIT License. See [LICENSE](LICENSE) for details.
