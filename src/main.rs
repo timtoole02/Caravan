@@ -513,7 +513,7 @@ async fn start_http_server(
     target_addr: String,
     model_path: PathBuf,
 ) {
-    let listener = match TcpListener::bind("127.0.0.1:7733").await {
+    let listener = match TcpListener::bind("0.0.0.0:7733").await {
         Ok(l) => l,
         Err(e) => {
             eprintln!("Failed to bind Swarm Console HTTP server: {e}");
